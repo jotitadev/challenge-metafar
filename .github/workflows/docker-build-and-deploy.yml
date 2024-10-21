@@ -1,0 +1,101 @@
+name: Build and Deploy Microservices
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Permite la ejecución manual del workflow
+
+permissions:
+  contents: write # Permite escribir en el contenido del repositorio
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Log in to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      # Step 3: Build Docker images for each microservice with version tagging
+      - name: Set version
+        id: vars
+        run: echo "VERSION=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+
+      - name: Set version output
+        run: echo "::set-output name=VERSION::$(date +%Y%m%d%H%M%S)"
+        id: version
+
+      - name: Build result image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/metafar-result:${{ steps.version.outputs.VERSION }} ./result
+
+      - name: Build vote image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/metafar-vote:${{ steps.version.outputs.VERSION }} ./vote
+
+      - name: Build worker image
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/metafar-worker:${{ steps.version.outputs.VERSION }} ./worker
+
+      # Step 4: Push Docker images to Docker Hub
+      - name: Push result image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/metafar-result:${{ steps.version.outputs.VERSION }}
+
+      - name: Push vote image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/metafar-vote:${{ steps.version.outputs.VERSION }}
+
+      - name: Push worker image
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/metafar-worker:${{ steps.version.outputs.VERSION }}
+
+      # Step 1: Checkout the infra repo
+      - name: Checkout repo
+        uses: actions/checkout@v3
+        with:
+          repository: jotitadev/challenge-infra-malafar-k8s
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "jalvarez@redbird.com.ar"
+
+      # Step 2: List files to verify the structure
+      - name: List files
+        run: |
+          echo "Current directory:"
+          pwd
+          echo "Listing contents:"
+          ls -R
+
+      # Step 4: Update the manifests with the new image versions
+      - name: Update Kubernetes manifests
+        run: |
+          sed -i "s|image: .*|image: ${{ secrets.DOCKER_USERNAME }}/metafar-result:${{ steps.version.outputs.VERSION }}|" ./despliegue/result.yaml
+          sed -i "s|image: .*|image: ${{ secrets.DOCKER_USERNAME }}/metafar-vote:${{ steps.version.outputs.VERSION }}|" ./despliegue/vote.yaml
+          sed -i "s|image: .*|image: ${{ secrets.DOCKER_USERNAME }}/metafar-worker:${{ steps.version.outputs.VERSION }}|" ./despliegue/worker.yaml
+
+      # Step 5: Push the updated manifests back to the infra repo
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "Jorge Alvarez"
+          git config --global user.email "jalvarez@redbird.com.ar"
+          git commit -a -m "Update Kubernetes manifests with new image versions"
+          git push git@github.com:jotitadev/challenge-infra-malafar-k8s.git HEAD:main
